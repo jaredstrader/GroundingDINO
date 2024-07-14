@@ -110,7 +110,22 @@ def predict(
     return boxes, logits.max(dim=1)[0], phrases
 
 
-def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> np.ndarray:
+def phrases2classes(phrases: List[str], classes: List[str]) -> np.ndarray:
+    class_ids = []
+    labels = []
+    for phrase in phrases:
+        for class_ in classes:
+            if class_ in phrase:
+                class_ids.append(classes.index(class_))
+                labels.append(class_)
+                break
+        else:
+            class_ids.append(None)
+            labels.append(None)
+    return np.array(class_ids), labels
+
+
+def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str], classes: List[str]) -> np.ndarray:
     """    
     This function annotates an image with bounding boxes and labels.
 
@@ -119,14 +134,25 @@ def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor
     boxes (torch.Tensor): A tensor containing bounding box coordinates.
     logits (torch.Tensor): A tensor containing confidence scores for each bounding box.
     phrases (List[str]): A list of labels for each bounding box.
+    classes (List[str]): A list of names for each class.
 
     Returns:
     np.ndarray: The annotated image.
     """
+    class_id, labels = phrases2classes(phrases=phrases, classes=classes)
+
+    #Do not annotate phrases where class_id/labels are None
+    valid_indices = [i for i, cid in enumerate(class_id) if cid is not None]
+    class_id = class_id[valid_indices]
+    labels = [labels[i] for i in valid_indices]
+    boxes = boxes[valid_indices]
+    logits = logits[valid_indices]
+
     h, w, _ = image_source.shape
     boxes = boxes * torch.Tensor([w, h, w, h])
     xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
     detections = sv.Detections(xyxy=xyxy)
+    detections.class_id = class_id
 
     labels = [
         f"{phrase} {logit:.2f}"
@@ -134,9 +160,19 @@ def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor
         in zip(phrases, logits)
     ]
 
-    box_annotator = sv.BoxAnnotator()
-    annotated_frame = cv2.cvtColor(image_source, cv2.COLOR_RGB2BGR)
-    annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+    bounding_box_annotator = sv.BoundingBoxAnnotator()
+    annotated_frame = bounding_box_annotator.annotate(
+        scene=image_source,
+        detections=detections
+    )
+
+    label_annotator = sv.LabelAnnotator(text_scale=0.5, text_padding=5)
+    annotated_frame = label_annotator.annotate(
+        scene=annotated_frame,
+        detections=detections,
+        labels=labels,
+    )
+
     return annotated_frame
 
 
